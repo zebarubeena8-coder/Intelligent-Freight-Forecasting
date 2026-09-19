@@ -1,0 +1,347 @@
+import streamlit as st
+import pandas as pd
+
+
+st.set_page_config(
+    page_title="AI Supplier & Port Selection",
+    page_icon="🌍",
+    layout="wide"
+)
+
+st.title("🌍 AI Supplier & Port Selection")
+
+st.write(
+    "Analyze overseas cargo sources and East Coast Indian ports "
+    "for bulk cargo procurement and freight planning."
+)
+
+st.divider()
+
+
+# -----------------------------
+# LOAD DATA
+# -----------------------------
+
+@st.cache_data
+def load_data():
+    return pd.read_csv("data/maritime_freight_data.csv")
+
+
+df = load_data()
+
+
+# -----------------------------
+# USER INPUTS
+# -----------------------------
+
+st.subheader("📋 Procurement Planning")
+
+col1, col2 = st.columns(2)
+
+with col1:
+
+    cargo_type = st.selectbox(
+        "📦 Select Cargo Type",
+        sorted(df["cargo_type"].unique())
+    )
+
+    cargo_quantity = st.number_input(
+        "📦 Required Cargo Quantity (MT)",
+        min_value=1000,
+        max_value=400000,
+        value=70000,
+        step=1000
+    )
+
+with col2:
+
+    destination_port = st.selectbox(
+        "⚓ Destination Indian Port",
+        ["All"] + sorted(
+            df["destination_port"].unique()
+        )
+    )
+
+    max_price = st.number_input(
+        "💰 Maximum Procurement Price (USD/MT)",
+        min_value=1.0,
+        max_value=1000.0,
+        value=200.0,
+        step=5.0
+    )
+
+
+st.divider()
+
+
+# -----------------------------
+# FILTER CARGO
+# -----------------------------
+
+cargo_df = df[
+    df["cargo_type"] == cargo_type
+].copy()
+
+if destination_port != "All":
+
+    cargo_df = cargo_df[
+        cargo_df["destination_port"] == destination_port
+    ]
+
+
+if len(cargo_df) == 0:
+
+    st.error(
+        "No matching cargo routes found for the selected inputs."
+    )
+
+else:
+
+    # -----------------------------
+    # SUPPLIER / PORT SUMMARY
+    # -----------------------------
+
+    supplier_summary = (
+        cargo_df
+        .groupby(
+            [
+                "origin_country",
+                "origin_port",
+                "destination_port"
+            ]
+        )
+        .agg(
+            average_price=(
+                "procurement_price_usd_mt",
+                "mean"
+            ),
+            average_distance=(
+                "distance_nm",
+                "mean"
+            ),
+            average_voyage=(
+                "voyage_days",
+                "mean"
+            ),
+            average_congestion=(
+                "port_congestion",
+                "mean"
+            ),
+            vessel_availability=(
+                "vessel_availability",
+                "mean"
+            ),
+            cargo_volume=(
+                "cargo_quantity_mt",
+                "sum"
+            )
+        )
+        .reset_index()
+    )
+
+    # -----------------------------
+    # FILTER PRICE
+    # -----------------------------
+
+    affordable = supplier_summary[
+        supplier_summary["average_price"] <= max_price
+    ].copy()
+
+    if len(affordable) == 0:
+
+        st.warning(
+            "No source-port combination is within the selected "
+            "maximum procurement price. Showing all available options."
+        )
+
+        affordable = supplier_summary.copy()
+
+
+    # -----------------------------
+    # AI SCORE
+    # -----------------------------
+
+    affordable["price_score"] = (
+        100
+        - (
+            affordable["average_price"]
+            / affordable["average_price"].max()
+            * 100
+        )
+    )
+
+    affordable["distance_score"] = (
+        100
+        - (
+            affordable["average_distance"]
+            / affordable["average_distance"].max()
+            * 100
+        )
+    )
+
+    affordable["congestion_score"] = (
+        100
+        - (
+            affordable["average_congestion"]
+            / affordable["average_congestion"].max()
+            * 100
+        )
+    )
+
+    affordable["availability_score"] = (
+        affordable["vessel_availability"]
+        / affordable["vessel_availability"].max()
+        * 100
+    )
+
+    affordable["AI_score"] = (
+        affordable["price_score"] * 0.35
+        + affordable["distance_score"] * 0.20
+        + affordable["congestion_score"] * 0.20
+        + affordable["availability_score"] * 0.25
+    )
+
+    affordable["AI_score"] = affordable["AI_score"].round(2)
+
+    affordable = affordable.sort_values(
+        "AI_score",
+        ascending=False
+    )
+
+
+    # -----------------------------
+    # TOP RECOMMENDATION
+    # -----------------------------
+
+    best = affordable.iloc[0]
+
+    st.success(
+        "✅ AI Source-Port Analysis Completed"
+    )
+
+    st.subheader("🤖 AI Recommended Source")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "🌎 Country",
+            best["origin_country"]
+        )
+
+    with col2:
+        st.metric(
+            "⚓ Origin Port",
+            best["origin_port"]
+        )
+
+    with col3:
+        st.metric(
+            "🏁 Destination",
+            best["destination_port"]
+        )
+
+    with col4:
+        st.metric(
+            "🧠 AI Score",
+            f"{best['AI_score']:.2f}"
+        )
+
+
+    st.divider()
+
+
+    # -----------------------------
+    # KEY METRICS
+    # -----------------------------
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "💰 Avg Procurement Price",
+            f"${best['average_price']:.2f}/MT"
+        )
+
+    with col2:
+        st.metric(
+            "🌍 Avg Distance",
+            f"{best['average_distance']:,.0f} NM"
+        )
+
+    with col3:
+        st.metric(
+            "🌊 Voyage Duration",
+            f"{best['average_voyage']:.1f} days"
+        )
+
+    with col4:
+        st.metric(
+            "🚢 Vessel Availability",
+            f"{best['vessel_availability']:.1f}"
+        )
+
+
+    st.divider()
+
+
+    # -----------------------------
+    # OPTIONS TABLE
+    # -----------------------------
+
+    st.subheader("📊 Available Source-Port Options")
+
+    display_columns = [
+        "origin_country",
+        "origin_port",
+        "destination_port",
+        "average_price",
+        "average_distance",
+        "average_voyage",
+        "average_congestion",
+        "vessel_availability",
+        "AI_score"
+    ]
+
+    st.dataframe(
+        affordable[display_columns].head(15),
+        use_container_width=True
+    )
+
+
+    st.divider()
+
+
+    # -----------------------------
+    # PROCUREMENT ESTIMATE
+    # -----------------------------
+
+    estimated_procurement_cost = (
+        cargo_quantity
+        * best["average_price"]
+    )
+
+    st.subheader("💰 Procurement Estimate")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric(
+            "Required Cargo",
+            f"{cargo_quantity:,.0f} MT"
+        )
+
+    with col2:
+        st.metric(
+            "Estimated Procurement Cost",
+            f"${estimated_procurement_cost:,.0f}"
+        )
+
+
+    st.info(
+        f"For **{cargo_quantity:,.0f} MT of {cargo_type}**, "
+        f"the AI analysis identifies **{best['origin_country']}** "
+        f"via **{best['origin_port']}** toward "
+        f"**{best['destination_port']}** as the highest-scoring "
+        f"source-port combination in the available dataset."
+    )
